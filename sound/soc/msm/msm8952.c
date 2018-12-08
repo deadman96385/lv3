@@ -1558,10 +1558,10 @@ static void *def_msm8952_wcd_mbhc_cal(void)
 	btn_high[1] = 125;
 	btn_low[2] = 212; /* vol up */
 	btn_high[2] = 212;
-	btn_low[3] = 500; /* vol dn */
-	btn_high[3] = 595;
-	btn_low[4] = 570; /* none */
-	btn_high[4] = 610;
+	btn_low[3] = 462; /* vol dn */
+	btn_high[3] = 462;
+	btn_low[4] = 500; /* none */
+	btn_high[4] = 500;
 #else // qct original
 	btn_low[0] = 75;
 	btn_high[0] = 75;

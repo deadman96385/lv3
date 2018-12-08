@@ -149,6 +149,7 @@ struct msm_compr_pdata {
 	bool use_legacy_api; /* indicates use older asm apis*/
 	struct msm_compr_dec_params *dec_params[MSM_FRONTEND_DAI_MAX];
 	struct msm_compr_ch_map *ch_map[MSM_FRONTEND_DAI_MAX];
+	bool is_in_use[MSM_FRONTEND_DAI_MAX];
 };
 
 struct msm_compr_audio {
@@ -1157,11 +1158,16 @@ static int msm_compr_open(struct snd_compr_stream *cstream)
 {
 	struct snd_compr_runtime *runtime = cstream->runtime;
 	struct snd_soc_pcm_runtime *rtd = cstream->private_data;
-	struct msm_compr_audio *prtd;
+	struct msm_compr_audio *prtd = NULL;
 	struct msm_compr_pdata *pdata =
 			snd_soc_platform_get_drvdata(rtd->platform);
 
 	pr_debug("%s\n", __func__);
+	if (pdata->is_in_use[rtd->dai_link->be_id] == true) {
+		pr_err("%s: %s is already in use,err: %d ",
+			__func__, rtd->dai_link->cpu_dai_name, -EBUSY);
+		return -EBUSY;
+	}
 	prtd = kzalloc(sizeof(struct msm_compr_audio), GFP_KERNEL);
 	if (prtd == NULL) {
 		pr_err("Failed to allocate memory for msm_compr_audio\n");
@@ -1173,7 +1179,7 @@ static int msm_compr_open(struct snd_compr_stream *cstream)
 	pdata->cstream[rtd->dai_link->be_id] = cstream;
 	pdata->audio_effects[rtd->dai_link->be_id] =
 		 kzalloc(sizeof(struct msm_compr_audio_effects), GFP_KERNEL);
-	if (!pdata->audio_effects[rtd->dai_link->be_id]) {
+	if (pdata->audio_effects[rtd->dai_link->be_id] == NULL) {
 		pr_err("%s: Could not allocate memory for effects\n", __func__);
 		pdata->cstream[rtd->dai_link->be_id] = NULL;
 		kfree(prtd);
@@ -1181,10 +1187,11 @@ static int msm_compr_open(struct snd_compr_stream *cstream)
 	}
 	pdata->dec_params[rtd->dai_link->be_id] =
 		 kzalloc(sizeof(struct msm_compr_dec_params), GFP_KERNEL);
-	if (!pdata->dec_params[rtd->dai_link->be_id]) {
+	if (pdata->dec_params[rtd->dai_link->be_id] == NULL) {
 		pr_err("%s: Could not allocate memory for dec params\n",
 			__func__);
 		kfree(pdata->audio_effects[rtd->dai_link->be_id]);
+		pdata->audio_effects[rtd->dai_link->be_id] = NULL;
 		pdata->cstream[rtd->dai_link->be_id] = NULL;
 		kfree(prtd);
 		return -ENOMEM;
@@ -1229,19 +1236,21 @@ static int msm_compr_open(struct snd_compr_stream *cstream)
 	populate_codec_list(prtd);
 	prtd->audio_client = q6asm_audio_client_alloc(
 				(app_cb)compr_event_handler, prtd);
-	if (!prtd->audio_client) {
+	if (prtd->audio_client == NULL) {
 		pr_err("%s: Could not allocate memory for client\n", __func__);
 		kfree(pdata->audio_effects[rtd->dai_link->be_id]);
+		pdata->audio_effects[rtd->dai_link->be_id] = NULL;
 		kfree(pdata->dec_params[rtd->dai_link->be_id]);
 		pdata->cstream[rtd->dai_link->be_id] = NULL;
-		runtime->private_data = NULL;
 		kfree(prtd);
+		runtime->private_data = NULL;
 		return -ENOMEM;
 	}
 
 	pr_debug("%s: session ID %d\n", __func__, prtd->audio_client->session);
 	prtd->audio_client->perf_mode = false;
 	prtd->session_id = prtd->audio_client->session;
+	pdata->is_in_use[rtd->dai_link->be_id] = true;
 
 #ifdef CONFIG_LGE_AUDIO_EFFECT
     lgesoundeffect_enable = 0xFF00FF00;
@@ -1359,11 +1368,15 @@ static int msm_compr_free(struct snd_compr_stream *cstream)
 	q6asm_audio_client_buf_free_contiguous(dir, ac);
 
 	q6asm_audio_client_free(ac);
-
-	kfree(pdata->audio_effects[soc_prtd->dai_link->be_id]);
-	pdata->audio_effects[soc_prtd->dai_link->be_id] = NULL;
-	kfree(pdata->dec_params[soc_prtd->dai_link->be_id]);
-	pdata->dec_params[soc_prtd->dai_link->be_id] = NULL;
+	if (pdata->audio_effects[soc_prtd->dai_link->be_id] != NULL) {
+		kfree(pdata->audio_effects[soc_prtd->dai_link->be_id]);
+		pdata->audio_effects[soc_prtd->dai_link->be_id] = NULL;
+	}
+	if (pdata->dec_params[soc_prtd->dai_link->be_id] != NULL) {
+		kfree(pdata->dec_params[soc_prtd->dai_link->be_id]);
+		pdata->dec_params[soc_prtd->dai_link->be_id] = NULL;
+	}
+	pdata->is_in_use[soc_prtd->dai_link->be_id] = false;
 	kfree(prtd);
 	runtime->private_data = NULL;
 
@@ -2466,6 +2479,11 @@ static int lge_dsp_sound_offload_playback_number_put(struct snd_kcontrol *kcontr
 	struct snd_soc_component *comp = snd_kcontrol_chip(kcontrol);
 	int pcm_device_id = (int)ucontrol->value.integer.value[0];
 
+	if(pcm_device_id < 0 || pcm_device_id >= comp->card->num_links){
+		pr_err("%s: Invalid value\n",__func__ );
+		return -EINVAL;
+	}
+
 	lgesound_current_be_id = comp->card->dai_link[pcm_device_id].be_id;
 	if (lgesoundeffect_enable == 1)
 		lgesound_lge_effect_be_id = lgesound_current_be_id;
@@ -2808,6 +2826,10 @@ static int lge_dsp_sound_normalizer_devicespeaker_put(struct snd_kcontrol *kcont
 	struct msm_compr_audio *prtd = NULL;
 	int rc;
 
+	if(lgesound_current_be_id >= MSM_FRONTEND_DAI_MAX || lgesound_current_be_id < 0){
+		pr_err("%s : Invalid value\n", __func__);
+		return -EINVAL;
+	}
 	lgesoundnormalizer_devicespeaker = (int)ucontrol->value.integer.value[0];
 
 	if (!cstream || cstream->runtime == NULL) {
@@ -4042,13 +4064,14 @@ static int msm_compr_probe(struct snd_soc_platform *platform)
 		pdata->dec_params[i] = NULL;
 		pdata->cstream[i] = NULL;
 		pdata->ch_map[i] = NULL;
+		pdata->is_in_use[i] = false;
 	}
 
 	snd_soc_add_platform_controls(platform, msm_compr_gapless_controls,
 				      ARRAY_SIZE(msm_compr_gapless_controls));
 #if defined(CONFIG_LGE_AUDIO_EFFECT) || defined(CONFIG_LGE_AUDIO_NORMALIZER) || defined(CONFIG_LGE_AUDIO_MABL)
 	snd_soc_add_platform_controls(platform,msm_compr_lge_effect_controls,
-				      ARRAY_SIZE(msm_compr_lge_effect_controls));	
+				      ARRAY_SIZE(msm_compr_lge_effect_controls));
 #endif
 
 

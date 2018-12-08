@@ -1601,7 +1601,18 @@ static int enable_ice_setup(struct ice_device *ice_dev)
 out_clocks:
 	qcom_ice_enable_clocks(ice_dev, false);
 out_reg:
-	regulator_disable(ice_dev->reg);
+	if (ice_dev->is_regulator_available) {
+		if (qcom_ice_get_vreg(ice_dev)) {
+			pr_err("%s: Could not get regulator\n", __func__);
+			goto out;
+		}
+		ret = regulator_disable(ice_dev->reg);
+		if (ret) {
+			pr_err("%s:%pK: Could not disable regulator\n",
+					__func__, ice_dev);
+			goto out;
+		}
+	}
 out:
 	return ret;
 }
